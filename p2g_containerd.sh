@@ -22,7 +22,7 @@ for pid in $my_pids; do
     p2g_usage=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv | grep $pid | awk '{print $3, $4}')
 
     # Use crictl to find the container name by PID
-    container_info=$(crictl ps --quiet | xargs crictl inspect | grep -A 10 "\"pid\": $pid" | grep -E '\"name\"|\"pid\"')
+    container_info=$(sudo crictl ps --quiet | xargs sudo crictl inspect | grep -A 10 "\"pid\": $pid" | grep -E '\"name\"|\"pid\"')
     container_name=$(echo "$container_info" | grep "\"name\"" | awk -F '"' '{print $4}')
     
     if [ ! -z "$container_name" ]; then
