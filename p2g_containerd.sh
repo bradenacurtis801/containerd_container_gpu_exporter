@@ -36,6 +36,8 @@ container_info=$(sudo crictl ps -a --quiet | xargs sudo crictl inspect --output 
 # Output the JSON for analysis
 echo "$container_info" > container_info.json
 
+node_name=$(hostname)
+
 for pid in $my_pids; do
     # Get the entire process tree for the PID
     all_pids=$(echo $pid; get_child_pids $pid)
@@ -49,43 +51,66 @@ for pid in $my_pids; do
         echo "GPU util: $p2g_util"
         echo "GPU usage: $p2g_usage"
 
-        # Check for parent process
-        parent_pid=$(ps -o ppid= -p $sub_pid)
-        
-        if [ ! -z "$parent_pid" ]; then
-            parent_command=$(ps -o cmd= -p $parent_pid)
-            echo "Parent process (PID $parent_pid): $parent_command"
-            
-            # Search container_info for parent PID
-            container_for_parent=$(echo "$container_info" | jq --arg parent_pid "$parent_pid" 'select(.info.pid == ($parent_pid | tonumber)) | {name: .info.config.metadata.name, image: .info.config.image.user_specified_image}')
-
-            if [ ! -z "$container_for_parent" ]; then
-                container_name_for_parent=$(echo "$container_for_parent" | jq -r '.name')
-                image_name_for_parent=$(echo "$container_for_parent" | jq -r '.image')
-                echo "Container for Parent PID: $container_name_for_parent"
-                echo "Image for Parent PID: $image_name_for_parent"
-            else
-                echo "No container found for parent PID: $parent_pid"
-            fi
-        else
-            echo "No parent process found for PID: $sub_pid"
-        fi
-
         # Parse container info to find the matching PID and extract relevant fields
-        container_details=$(echo "$container_info" | jq --arg sub_pid "$sub_pid" 'select(.info.pid == ($sub_pid | tonumber)) | {name: .info.config.metadata.name, image: .info.config.image.user_specified_image}')
+        container_details=$(echo "$container_info" | jq --arg sub_pid "$sub_pid" -c 'select(.info.pid == ($sub_pid | tonumber)) | {name: .info.config.metadata.name, image: .info.config.image.user_specified_image, labels: .info.config.labels}')
 
         if [ ! -z "$container_details" ]; then
             container_name=$(echo "$container_details" | jq -r '.name')
             image_name=$(echo "$container_details" | jq -r '.image')
+            labels=$(echo "$container_details" | jq -r '.labels')
+
+            # Extract labels
+            pod_name=$(echo "$labels" | jq -r '."io.kubernetes.pod.name"')
+            namespace=$(echo "$labels" | jq -r '."io.kubernetes.pod.namespace"')
+            container_name_label=$(echo "$labels" | jq -r '."io.kubernetes.container.name"')
             
-            echo -e PID: $sub_pid
-            echo -e CONTAINER_NAME: $container_name
+            echo -e NODE_NAME: $node_name
+            echo -e POD_NAME: $pod_name
+            echo -e NAMESPACE: $namespace
+            echo -e CONTAINER_NAME: $container_name_label
             echo -e IMAGE: $image_name
+            echo -e PID: $sub_pid
             echo -e GPU util: $p2g_util
             echo -e GPU usage: $p2g_usage
             echo -e "\n"
         else
             echo -e "No container found for PID: $sub_pid\n"
+
+            # Check for parent process if no container found for sub PID
+            parent_pid=$(ps -o ppid= -p $sub_pid)
+            
+            if [ ! -z "$parent_pid" ]; then
+                parent_command=$(ps -o cmd= -p $parent_pid)
+                echo "Parent process (PID $parent_pid): $parent_command"
+                
+                # Search container_info for parent PID
+                container_for_parent=$(echo "$container_info" | jq --arg parent_pid "$parent_pid" -c 'select(.info.pid == ($parent_pid | tonumber)) | {name: .info.config.metadata.name, image: .info.config.image.user_specified_image, labels: .info.config.labels}')
+
+                if [ ! -z "$container_for_parent" ]; then
+                    container_name_for_parent=$(echo "$container_for_parent" | jq -r '.name')
+                    image_name_for_parent=$(echo "$container_for_parent" | jq -r '.image')
+                    labels_for_parent=$(echo "$container_for_parent" | jq -r '.labels')
+
+                    # Extract labels for parent
+                    pod_name=$(echo "$labels_for_parent" | jq -r '."io.kubernetes.pod.name"')
+                    namespace=$(echo "$labels_for_parent" | jq -r '."io.kubernetes.pod.namespace"')
+                    container_name_label=$(echo "$labels_for_parent" | jq -r '."io.kubernetes.container.name"')
+                    
+                    echo -e NODE_NAME: $node_name
+                    echo -e POD_NAME: $pod_name
+                    echo -e NAMESPACE: $namespace
+                    echo -e CONTAINER_NAME: $container_name_label
+                    echo -e IMAGE: $image_name_for_parent
+                    echo -e PID: $parent_pid
+                    echo -e GPU util: $p2g_util
+                    echo -e GPU usage: $p2g_usage
+                    echo -e "\n"
+                else
+                    echo -e "No container found for parent PID: $parent_pid\n"
+                fi
+            else
+                echo "No parent process found for PID: $sub_pid"
+            fi
         fi
     done
 done
