@@ -67,6 +67,42 @@ get_gpu_usage() {
     nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv | grep $pid | awk '{print $3, $4}'
 }
 
+# Function to aggregate GPU usage for a given parent PID
+aggregate_gpu_usage() {
+    local parent_pid=$1
+    local total_gpu_util=0
+    local total_gpu_mem_util=0
+    local count=0
+
+    local child_pids=$(get_child_pids $parent_pid)
+    for pid in $parent_pid $child_pids; do
+        local gpu_util
+        gpu_util=$(get_gpu_utilization $pid)
+        gpu_usage=$(get_gpu_usage $pid)
+        if [[ ! -z $gpu_util ]]; then
+            local sm_util mem_util
+            sm_util=$(echo $gpu_util | awk '{print $3}')
+            mem_util=$(echo $gpu_util | awk '{print $4}')
+            total_gpu_util=$((total_gpu_util + sm_util))
+            total_gpu_mem_util=$((total_gpu_mem_util + mem_util))
+            count=$((count + 1))
+        fi
+    done
+
+    if [[ $count -gt 0 ]]; then
+        local avg_gpu_util=$((total_gpu_util / count))
+        local avg_gpu_mem_util=$((total_gpu_mem_util / count))
+        echo "SM Utilization"
+        echo "  percentage: $avg_gpu_util%"
+        echo "  value: $total_gpu_util"
+        echo "Memory Utilization: "
+        echo "  percentage: $avg_gpu_mem_util%"
+        echo "  value: $total_gpu_mem_util%"
+    else
+        echo "No GPU utilization found for PID $parent_pid"
+    fi
+}
+
 # Function to get container details
 get_container_details() {
     local sub_pid=$1
