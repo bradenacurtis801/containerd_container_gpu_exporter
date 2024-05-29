@@ -17,8 +17,14 @@ get_parent_pid() {
     ps -o ppid= -p $pid | tr -d ' '
 }
 
-# Function to get all child PIDs recursively
+# Function to get immediate child PIDs
 get_child_pids() {
+    local parent_pid=$1
+    ps --ppid $parent_pid -o pid=
+}
+
+# Function to get all child PIDs recursively
+get_child_pids_all() {
     local parent_pid=$1
     local child_pids=$(ps --ppid $parent_pid -o pid=)
     
