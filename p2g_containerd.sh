@@ -11,6 +11,12 @@ Help() {
     echo -e "GPU usage: GPU usage of the memory"
 }
 
+# Function to get the immediate parent PID
+get_parent_pid() {
+    local pid=$1
+    ps -o ppid= -p $pid | tr -d ' '
+}
+
 # Function to get all child PIDs recursively
 get_child_pids() {
     local parent_pid=$1
@@ -20,6 +26,17 @@ get_child_pids() {
         echo $child_pid
         get_child_pids $child_pid
     done
+}
+
+# Function to get all ancestor PIDs
+get_ancestor_pids() {
+    local pid=$1
+    local ancestors=()
+    while [ "$pid" -ne 1 ]; do
+        pid=$(ps -o ppid= -p $pid)
+        ancestors+=($pid)
+    done
+    echo "${ancestors[@]}"
 }
 
 # Function to detect PIDs using the GPU
@@ -74,71 +91,64 @@ print_container_info() {
 
 # Main script execution
 main() {
-    if [ "$1" == "-h" ] || [ "$1" == "--help" ]; then
-        Help
-        exit 0
-    fi
-    
+    local verbose=0
+
+    while [[ "$1" =~ ^- && ! "$1" == "--" ]]; do
+        case $1 in
+            -v | --verbose )
+                verbose=1
+                ;;
+            -h | --help )
+                Help
+                exit 0
+                ;;
+        esac
+        shift
+    done
+
     my_pids=$(detect_gpu_pids)
-    echo "Detected PIDs using the GPU: $my_pids"
+    [[ $verbose -eq 1 ]] && echo "Detected PIDs using the GPU: $my_pids"
     
     container_info=$(get_container_info)
-    echo "$container_info" > container_info.json
+    [[ $verbose -eq 1 ]] && echo "$container_info" > container_info.json
     
     node_name=$(hostname)
     
+    declare -A pid_map
+
     for pid in $my_pids; do
-        all_pids=$(echo $pid; get_child_pids $pid)
+        parent_pid=$(get_parent_pid $pid)
+        pid_map[$pid]=1
+        pid_map[$parent_pid]=1
+    done
+
+    matched_pids=()
+    for pid in "${!pid_map[@]}"; do
+        if echo "$container_info" | grep -q "$pid"; then
+            matched_pids+=($pid)
+        fi
+    done
+
+    unique_matched_pids=($(echo "${matched_pids[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+    for pid in "${unique_matched_pids[@]}"; do
+        p2g_util=$(get_gpu_utilization $pid)
+        p2g_usage=$(get_gpu_usage $pid)
         
-        for sub_pid in $all_pids; do
-            p2g_util=$(get_gpu_utilization $sub_pid)
-            p2g_usage=$(get_gpu_usage $sub_pid)
+        container_details=$(get_container_details $pid)
+        if [ ! -z "$container_details" ]; then
+            container_name=$(echo "$container_details" | jq -r '.name')
+            image_name=$(echo "$container_details" | jq -r '.image')
+            labels=$(echo "$container_details" | jq -r '.labels')
             
-            echo "Inspecting PID: $sub_pid"
-            echo "GPU util: $p2g_util"
-            echo "GPU usage: $p2g_usage"
+            pod_name=$(echo "$labels" | jq -r '."io.kubernetes.pod.name"')
+            namespace=$(echo "$labels" | jq -r '."io.kubernetes.pod.namespace"')
+            container_name_label=$(echo "$labels" | jq -r '."io.kubernetes.container.name"')
             
-            container_details=$(get_container_details $sub_pid)
-            
-            if [ ! -z "$container_details" ]; then
-                container_name=$(echo "$container_details" | jq -r '.name')
-                image_name=$(echo "$container_details" | jq -r '.image')
-                labels=$(echo "$container_details" | jq -r '.labels')
-                
-                pod_name=$(echo "$labels" | jq -r '."io.kubernetes.pod.name"')
-                namespace=$(echo "$labels" | jq -r '."io.kubernetes.pod.namespace"')
-                container_name_label=$(echo "$labels" | jq -r '."io.kubernetes.container.name"')
-                
-                print_container_info "$node_name" "$pod_name" "$namespace" "$container_name_label" "$image_name" "$sub_pid" "$p2g_util" "$p2g_usage"
-            else
-                echo -e "No container found for PID: $sub_pid\n"
-                
-                parent_pid=$(ps -o ppid= -p $sub_pid)
-                
-                if [ ! -z "$parent_pid" ]; then
-                    parent_command=$(ps -o cmd= -p $parent_pid)
-                    echo "Parent process (PID $parent_pid): $parent_command"
-                    
-                    container_for_parent=$(get_container_details $parent_pid)
-                    
-                    if [ ! -z "$container_for_parent" ]; then
-                        container_name_for_parent=$(echo "$container_for_parent" | jq -r '.name')
-                        image_name_for_parent=$(echo "$container_for_parent" | jq -r '.image')
-                        labels_for_parent=$(echo "$container_for_parent" | jq -r '.labels')
-                        
-                        pod_name=$(echo "$labels_for_parent" | jq -r '."io.kubernetes.pod.name"')
-                        namespace=$(echo "$labels_for_parent" | jq -r '."io.kubernetes.pod.namespace"')
-                        container_name_label=$(echo "$labels_for_parent" | jq -r '."io.kubernetes.container.name"')
-                        
-                        print_container_info "$node_name" "$pod_name" "$namespace" "$container_name_label" "$image_name_for_parent" "$parent_pid" "$p2g_util" "$p2g_usage"
-                    else
-                        echo -e "No container found for parent PID: $parent_pid\n"
-                    fi
-                else
-                    echo "No parent process found for PID: $sub_pid"
-                fi
-            fi
-        done
+            print_container_info "$node_name" "$pod_name" "$namespace" "$container_name_label" "$image_name" "$pid" "$p2g_util" "$p2g_usage"
+        else
+            [[ $verbose -eq 1 ]] && echo -e "No container found for PID: $pid\n"
+        fi
     done
 }
 
